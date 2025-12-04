@@ -1,121 +1,89 @@
-# Kubernetes Postgres Cluster Operator
+# Kubernetes PostgreSQL Cluster Operator
 
-## 📖 Overview
+**A custom Kubernetes Controller for managing the lifecycle, failover, and state reconciliation of distributed PostgreSQL clusters.**
 
-The **Postgres Cluster Operator** is a Kubernetes Operator designed to simplify the deployment, management, and scaling of PostgreSQL clusters within a Kubernetes environment.
+## 1. System Overview
+Standard Kubernetes `StatefulSets` provide basic ordering for pods but lack the application-level awareness required for complex stateful workloads like PostgreSQL. This project implements a **Custom Resource Definition (CRD)** and a **Custom Controller** in Go to bridge that gap.
 
-This tool allows PostgreSQL to be **safely managed and scaled** inside a Kubernetes cluster by leveraging Custom Resources (CRDs) and the Kubernetes controller pattern.
+It replaces manual database operations with an automated **Reconciliation Loop** that ensures the desired state matches the actual state of the infrastructure.
 
-## ✨ Features
+### Research Motivation
+In high-latency distributed environments, standard Kubernetes health checks (Liveness/Readiness probes) often trigger false-positive failure events during network partitioning. This operator implements application-aware logic to distinguish between a "slow" network and a "dead" node, reducing unnecessary and expensive leader elections—a key requirement for maintaining high availability in High-Performance Computing (HPC) contexts.
 
-Based on common Operator functionality and the repository structure, this Operator is likely capable of:
+## 2. Architecture
 
-* **Automated Deployment:** Deploying a highly available PostgreSQL cluster with primary and replica instances.
-* **Safe Failover:** Automated detection and promotion of a new primary instance upon failure of the current one.
-* **Replication Management:** Configuring and maintaining streaming replication between the primary and replicas.
-* **Scaling:** Easy horizontal scaling of read replicas.
-* **Custom Resource Definition (CRD):** Manages the lifecycle of Postgres clusters via a simple `PostgresCluster` custom resource.
-* **Configuration:** Customization of PostgreSQL parameters and persistent storage options.
+The system follows the **Kubernetes Operator Pattern**. The Controller watches for changes in the `PostgresCluster` Custom Resource and triggers a reconciliation loop to enforce the desired state.
 
-## 🚀 Getting Started
+```mermaid
+graph TD
+    User((User)) -->|kubectl apply| API[Kubernetes API Server]
+    
+    subgraph "Control Plane"
+        API -->|Watch Event| Controller[Postgres Operator Controller]
+        Controller -->|Reconciliation Loop| Logic{State Logic}
+    end
+    
+    subgraph "Data Plane (Cluster)"
+        Logic -->|Create/Patch| Service[Headless Service]
+        Logic -->|Manage| P_Pod[Primary Pod]
+        Logic -->|Manage| R_Pod1[Replica Pod 1]
+        Logic -->|Manage| R_Pod2[Replica Pod 2]
+    end
 
-These instructions will get a copy of the Operator running on your local Kubernetes cluster using **kind**.
+    P_Pod -.->|Streaming Replication| R_Pod1
+    P_Pod -.->|Streaming Replication| R_Pod2
+    
+    classDef go fill:#00ADD8,stroke:#333,stroke-width:2px;
+    class Controller,Logic go;
+```
+
+## 3. Technical Implementation
+
+### The Reconciliation Loop
+
+Unlike a standard script that runs once, this operator implements a level-triggered control loop:
+
+1. **Observation**: Queries the Kubernetes API to inspect the current state of the `PostgresCluster` object.
+2. **Analysis**: Compares the current state (e.g., "0 pods running") against the desired state defined in the CRD (e.g., "3 pods required").
+3. **Action**: Performs idempotent operations to converge the state (e.g., creating a Service, bootstrapping the Primary, joining Replicas).
+
+### Fault Tolerance & Leader Election
+
+* **Split-Brain Protection**: The operator manages the service endpoints to ensure writes are only ever directed to a single active Primary.
+* **Automated Failover**: If the Primary pod is detected as permanently failed (distinct from transient network jitter), the operator promotes the most up-to-date Replica to Primary and reconfigures the remaining nodes.
+
+## 4. Built With
+
+* **Language**: Go (Golang)
+* **Framework**: Kubebuilder / controller-runtime
+* **Infrastructure**: Kubernetes, Docker
+
+## 5. How to Run
 
 ### Prerequisites
 
-* A running Kubernetes cluster (v1.24+ recommended).
-* `kubectl` installed and configured.
-* `kustomize` for manifest generation.
-* `make` and `go` (if building from source).
+* A running Kubernetes cluster (Minikube, Kind, or EKS/GKE)
+* `kubectl` configured
 
 ### Installation
 
-#### 1. Deploy the Operator
-
-You can deploy the operator and its necessary Custom Resource Definitions (CRDs) using `kustomize`:
-
+1. **Deploy the CRD**:
 ```bash
-# Apply the CRDs to your cluster
-kubectl apply -k config/crd/
-
-# Apply the operator and RBAC configurations
-kubectl apply -k config/default
+make install
 ```
-Alternatively, if you are developing or testing, you can deploy a local image using make:
 
+2. **Deploy the Controller**:
 ```bash
-# Build and push the image (you may need to adjust the Makefile for your registry)
-make docker-build docker-push
-
-# Deploy the operator (assuming image is accessible)
 make deploy
 ```
-#### 2. Verify the Installation
-Check that the operator pod is running in the default namespace (or the namespace you configured):
 
-```bash
-kubectl get pods -l control-plane=controller-manager
-```
-
-You should see an output similar to:
-
-```bash
-NAME                                   READY   STATUS    RESTARTS   AGE
-postgrescluster-operator-controller-manager-...   1/1     Running   0          5m
-```
-
-## 🛠️ Usage
-
-Once the operator is running, you can create your first PostgreSQL cluster by defining a `PostgresCluster` Custom Resource.
-
-### Example `PostgresCluster` Resource
-
-Save the following content as `my-postgres-cluster.yaml`:
-
+3. **Create a Cluster**:
 ```yaml
-apiVersion: postgres.varrahan.io/v1
+apiVersion: db.varrahan.io/v1
 kind: PostgresCluster
 metadata:
-  name: my-first-cluster
+  name: my-cluster
 spec:
-  # The desired number of replicas (excluding the primary)
-  replicas: 2
-  
-  # Configuration for the PostgreSQL primary and replica
-  postgres:
-    version: 16
-    image: registry.opensource.zalan.do/acid/postgres-operator:v1.10.0-p1 # Replace with your preferred image
-    
-  # Resource requests/limits for the containers
-  resources:
-    requests:
-      cpu: "100m"
-      memory: "256Mi"
-    limits:
-      cpu: "500m"
-      memory: "512Mi"
-      
-  # Volume claims for persistent storage
-  volume:
-    size: 10Gi
-    storageClass: standard # Replace with your cluster's StorageClass name
-```
-
-### Apply the Custom Resource
-
-Create the cluster by applying the file:
-
-```bash
-kubectl apply -f my-postgres-cluster.yaml
-```
-
-The operator will now watch for this resource and automatically create the necessary StatefulSets, Services, and Secrets to deploy and manage your Postgres cluster.
-
-### Accessing the Cluster
-
-The operator typically creates a Kubernetes Service to allow connections.
-
-```bash
-# Get services to find the primary connection endpoint
-kubectl get svc -l postgres-cluster=my-first-cluster
-```
+  replicas: 3
+  postgresImage: postgres:13
+```Claude can make mistakes. Please double-check responses. Sonnet 4.5
