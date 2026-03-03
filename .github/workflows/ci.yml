@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    name: Build & Test Operator
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v4
+        with:
+          version: latest
+          args: --timeout=5m
+
+      - name: Run tests (with envtest if available)
+        run: |
+          if [ -f Makefile ] && grep -q "^test:" Makefile; then
+            echo "Running tests via Makefile..."
+            make test
+          else
+            echo "Running standard go tests..."
+            go test -v -race -coverprofile=coverage.out ./...
+          fi
+
+      - name: Build manager binary
+        run: |
+          if [ -f Makefile ] && grep -q "^build:" Makefile; then
+            make build
+          else
+            go build -a -o bin/manager main.go
+          fi
+
+      - name: Build Docker image
+        run: |
+          if [ -f Makefile ] && grep -q "^docker-build:" Makefile; then
+            make docker-build IMG=postgres-cluster-operator:test
+          else
+            docker build -t postgres-cluster-operator:test .
+          fi
