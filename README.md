@@ -86,4 +86,4 @@ metadata:
 spec:
   replicas: 3
   postgresImage: postgres:13
-```Claude can make mistakes. Please double-check responses. Sonnet 4.5
+```
