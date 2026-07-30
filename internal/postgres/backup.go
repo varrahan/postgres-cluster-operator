@@ -1,8 +1,9 @@
 package postgres
 
 import (
-	"fmt"
 	"context"
+	"fmt"
+	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -25,163 +26,188 @@ func NewBackupManager(client client.Client) *BackupManager {
 	}
 }
 
+// NormalizeBackupType returns supported backup type aliases in a canonical form.
+func NormalizeBackupType(backupType string) string {
+	switch strings.ToLower(strings.TrimSpace(backupType)) {
+	case "", "full", "physical":
+		return "physical"
+	case "logical":
+		return "logical"
+	default:
+		return strings.ToLower(strings.TrimSpace(backupType))
+	}
+}
+
 func (bm *BackupManager) CreateBackupJob(
-    backup *databasev1.PostgresBackup,
-    cluster *databasev1.PostgresCluster,
-    instance *databasev1.PostgresInstanceSpec,
+	backup *databasev1.PostgresBackup,
+	cluster *databasev1.PostgresCluster,
+	instance *databasev1.PostgresInstanceSpec,
 ) (*batchv1.Job, error) {
-    // Get PVC name from cluster's backup storage config
-    pvcName, ok := cluster.Spec.Backup.Storage.Config["pvcName"]
-    if !ok || pvcName == "" {
-        return nil, fmt.Errorf("pvcName not set in cluster backup storage config")
-    }
+	// Get PVC name from cluster's backup storage config
+	pvcName, ok := cluster.Spec.Backup.Storage.Config["pvcName"]
+	if !ok || pvcName == "" {
+		return nil, fmt.Errorf("pvcName not set in cluster backup storage config")
+	}
 
-    // Build job name (CR name + "-job")
-    jobName := backup.Name + "-job"
-    if len(jobName) > 63 {
-        jobName = jobName[:63]
-    }
+	// Build job name (CR name + "-job")
+	jobName := backup.Name + "-job"
+	if len(jobName) > 63 {
+		jobName = jobName[:63]
+	}
 
-    // Construct image using cluster's PostgresVersion
-    image := "postgres:" + cluster.Spec.PostgresVersion
+	// Construct image using cluster's PostgresVersion
+	image := "postgres:" + cluster.Spec.PostgresVersion
 
-    // Determine target host
-    targetHost := cluster.Status.CurrentPrimary // Default to cluster primary
-    if instance != nil && instance.Name != "" {
-        targetHost = fmt.Sprintf("%s-%s", cluster.Name, instance.Name)
-    }
+	// Determine target host
+	targetHost := cluster.Status.CurrentPrimary
+	if targetHost == "" {
+		targetHost = fmt.Sprintf("%s-primary.%s.svc.cluster.local", cluster.Name, cluster.Namespace)
+	}
+	if instance != nil && instance.Name != "" {
+		targetHost = fmt.Sprintf("%s-%s.%s.svc.cluster.local", cluster.Name, instance.Name, cluster.Namespace)
+	}
 
-    // Initialize command and args based on backup type
-    var command []string
-    var args []string
-    var env []corev1.EnvVar
+	// Normalize type and initialize command by backup type
+	backupType := NormalizeBackupType(backup.Spec.Type)
+	var command []string
+	var args []string
 
-    switch backup.Spec.Type {
-    case "logical":
-        // For logical backups (pg_dump), we need the database name
-        dbName := cluster.Spec.Database.Name
-        if instance != nil && instance.Database != nil && instance.Database.Name != "" {
-            dbName = instance.Database.Name
-        }
+	switch backupType {
+	case "logical":
+		// For logical backups (pg_dump), we need the database name
+		dbName := cluster.Spec.Database.Name
+		if instance != nil && instance.Database != nil && instance.Database.Name != "" {
+			dbName = instance.Database.Name
+		}
 
-        command = []string{"pg_dump"}
-        args = []string{
-            "-h", targetHost,
-            "-U", "postgres",
-            "-d", dbName,
-            "-f", "/backup/data.sql",
-            "-F", "c",
-            "-Z", fmt.Sprintf("%d", backup.Spec.Options.Compression),
-        }
-        if backup.Spec.Options.ParallelJobs > 1 {
-            args = append(args, "-j", fmt.Sprintf("%d", backup.Spec.Options.ParallelJobs))
-        }
+		command = []string{"pg_dump"}
+		args = []string{
+			"-h", targetHost,
+			"-U", "postgres",
+			"-d", dbName,
+			"-f", "/backup/data.dump",
+			"-F", "c",
+		}
+		if backup.Spec.Options.Compression > 0 {
+			args = append(args, "-Z", fmt.Sprintf("%d", backup.Spec.Options.Compression))
+		}
+		if backup.Spec.Options.ParallelJobs > 1 {
+			args = append(args, "-j", fmt.Sprintf("%d", backup.Spec.Options.ParallelJobs))
+		}
 
-        // Add any instance-specific parameters if needed
-        if instance != nil && instance.Config != nil {
-            for param, value := range instance.Config {
-                args = append(args, "--"+param, value)
-            }
-        }
+		// Add any instance-specific parameters if needed
+		if instance != nil && instance.Config != nil {
+			for param, value := range instance.Config {
+				args = append(args, "--"+param, value)
+			}
+		}
 
-    default: // "physical" or unspecified
-        // For physical backups (pg_basebackup), we don't need the database name
-        command = []string{"pg_basebackup"}
-        args = []string{
-            "-D", "/backup",
-            "-h", targetHost,
-            "-U", "postgres",
-            "--compress=" + string(backup.Spec.Options.Compression),
-            "--jobs", fmt.Sprintf("%d", backup.Spec.Options.ParallelJobs),
-        }
-    }
+	case "physical":
+		// For physical backups (pg_basebackup), we don't need the database name
+		command = []string{"pg_basebackup"}
+		args = []string{
+			"-D", "/backup",
+			"-h", targetHost,
+			"-U", "postgres",
+			"--checkpoint", "fast",
+		}
+		if backup.Spec.Options.Compression > 0 {
+			args = append(args, "--compress="+fmt.Sprintf("%d", backup.Spec.Options.Compression))
+		}
+		if backup.Spec.Options.ParallelJobs > 1 {
+			args = append(args, "--jobs", fmt.Sprintf("%d", backup.Spec.Options.ParallelJobs))
+		}
 
-    // Common environment variables
-    env = []corev1.EnvVar{
-        {
-            Name: "PGPASSWORD",
-            ValueFrom: &corev1.EnvVarSource{
-                SecretKeyRef: &corev1.SecretKeySelector{
-                    LocalObjectReference: corev1.LocalObjectReference{
-                        Name: cluster.Name + "-credentials",
-                    },
-                    Key: "postgres-password",
-                },
-            },
-        },
-    }
+	default:
+		return nil, fmt.Errorf("unsupported backup type: %s", backup.Spec.Type)
+	}
 
-    // Add instance-specific init script if available for logical backups
-    if backup.Spec.Type == "logical" && instance != nil && instance.Database != nil && instance.Database.InitScript != "" {
-        env = append(env, corev1.EnvVar{
-            Name:  "PGINITSCRIPT",
-            Value: instance.Database.InitScript,
-        })
-    }
+	// Common environment variables
+	env := []corev1.EnvVar{
+		{
+			Name: "PGPASSWORD",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: cluster.Name + "-credentials",
+					},
+					Key: "postgres-password",
+				},
+			},
+		},
+	}
 
-    // Create job object
-    job := &batchv1.Job{
-        ObjectMeta: metav1.ObjectMeta{
-            Name:      jobName,
-            Namespace: backup.Namespace,
-            Labels: map[string]string{
-                "app.kubernetes.io/name":       "postgres-backup",
-                "app.kubernetes.io/instance":   backup.Spec.ClusterRef.Name,
-                "app.kubernetes.io/managed-by": "postgres-operator",
-                "database.example.com/cluster": backup.Spec.ClusterRef.Name,
-                "database.example.com/type":    backup.Spec.Type,
-            },
-        },
-        Spec: batchv1.JobSpec{
-            Template: corev1.PodTemplateSpec{
-                ObjectMeta: metav1.ObjectMeta{
-                    Labels: map[string]string{
-                        "app.kubernetes.io/name":       "postgres-backup",
-                        "app.kubernetes.io/instance":   backup.Spec.ClusterRef.Name,
-                        "app.kubernetes.io/managed-by": "postgres-operator",
-                    },
-                },
-                Spec: corev1.PodSpec{
-                    Containers: []corev1.Container{
-                        {
-                            Name:         "backup",
-                            Image:        image,
-                            Command:      command,
-                            Args:         args,
-                            VolumeMounts: []corev1.VolumeMount{
-                                {
-                                    Name:      "backup-storage",
-                                    MountPath: "/backup",
-                                },
-                            },
-                            Env: env,
-                        },
-                    },
-                    RestartPolicy: corev1.RestartPolicyOnFailure,
-                    Volumes: []corev1.Volume{
-                        {
-                            Name: "backup-storage",
-                            VolumeSource: corev1.VolumeSource{
-                                PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-                                    ClaimName: pvcName,
-                                },
-                            },
-                        },
-                    },
-                },
-            },
-        },
-    }
+	// Add instance-specific init script if available for logical backups
+	if backupType == "logical" && instance != nil && instance.Database != nil && instance.Database.InitScript != "" {
+		env = append(env, corev1.EnvVar{
+			Name:  "PGINITSCRIPT",
+			Value: instance.Database.InitScript,
+		})
+	}
 
-    // Add instance-specific labels if provided
-    if instance != nil {
-        job.Labels["database.example.com/instance"] = instance.Name
-        if instance.Role != "" {
-            job.Labels["database.example.com/role"] = instance.Role
-        }
-    }
+	// Create job object
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      jobName,
+			Namespace: backup.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":       "postgres-backup",
+				"app.kubernetes.io/instance":   backup.Spec.ClusterRef.Name,
+				"app.kubernetes.io/managed-by": "postgres-operator",
+				"database.example.com/cluster": backup.Spec.ClusterRef.Name,
+				"database.example.com/type":    backupType,
+			},
+		},
+		Spec: batchv1.JobSpec{
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"app.kubernetes.io/name":       "postgres-backup",
+						"app.kubernetes.io/instance":   backup.Spec.ClusterRef.Name,
+						"app.kubernetes.io/managed-by": "postgres-operator",
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:         "backup",
+							Image:        image,
+							Command:      command,
+							Args:         args,
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "backup-storage",
+									MountPath: "/backup",
+								},
+							},
+							Env: env,
+						},
+					},
+					RestartPolicy: corev1.RestartPolicyOnFailure,
+					Volumes: []corev1.Volume{
+						{
+							Name: "backup-storage",
+							VolumeSource: corev1.VolumeSource{
+								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+									ClaimName: pvcName,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
 
-    return job, nil
+	// Add instance-specific labels if provided
+	if instance != nil {
+		job.Labels["database.example.com/instance"] = instance.Name
+		if instance.Role != "" {
+			job.Labels["database.example.com/role"] = instance.Role
+		}
+	}
+
+	return job, nil
 }
 // ListBackups lists all backups for a cluster
 func (bm *BackupManager) ListBackups(ctx context.Context, clusterName, namespace string) (*databasev1.PostgresBackupList, error) {

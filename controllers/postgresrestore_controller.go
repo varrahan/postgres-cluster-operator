@@ -291,6 +291,13 @@ func (r *PostgresRestoreReconciler) createRestoreJob(
 		dbConfig = *instance.Database
 	}
 
+	restoreType := postgres.NormalizeBackupType(backup.Spec.Type)
+	switch restoreType {
+	case "logical", "physical":
+	default:
+		return nil, fmt.Errorf("unsupported backup type: %s", backup.Spec.Type)
+	}
+
 	// Build restore command
 	cmd, err := postgres.BuildRestoreCommand(backup, restore.Spec.Options, dbConfig, storage)
 	if err != nil {
@@ -298,7 +305,58 @@ func (r *PostgresRestoreReconciler) createRestoreJob(
 	}
 
 	// Var for BackoffLimit
-	BackoffLimitPtrVal := int32(0)
+	backoffLimit := int32(0)
+	dataVolumeMount := []corev1.VolumeMount{}
+	volumes := []corev1.Volume{}
+	restoreEnv := []corev1.EnvVar{
+		{
+			Name: "PGPASSWORD",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: fmt.Sprintf("%s-credentials", cluster.Name),
+					},
+					Key: "postgres-password",
+				},
+			},
+		},
+	}
+
+	switch restoreType {
+	case "physical":
+		if storage.VolumeName == "" {
+			return nil, fmt.Errorf("storage.volumeName is required for physical restore")
+		}
+		dataVolumeMount = append(dataVolumeMount, corev1.VolumeMount{
+			Name:      "data",
+			MountPath: "/var/lib/postgresql/data",
+		})
+		volumes = append(volumes, corev1.Volume{
+			Name: "data",
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: storage.VolumeName,
+				},
+			},
+		})
+	case "logical":
+		// Logical restore connects to database, no in-pod data PVC required.
+		restoreEnv = append(restoreEnv,
+			corev1.EnvVar{
+				Name:  "POSTGRES_USER",
+				Value: "postgres",
+			},
+			corev1.EnvVar{
+				Name:  "POSTGRES_PORT",
+				Value: "5432",
+			},
+			corev1.EnvVar{
+				Name:  "POSTGRES_HOST",
+				Value: fmt.Sprintf("%s.%s.svc.cluster.local", getInstanceResourceName(cluster.Name, instance.Name), cluster.Namespace),
+			},
+		)
+	}
+
 	// Create job object
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -314,7 +372,7 @@ func (r *PostgresRestoreReconciler) createRestoreJob(
 			},
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit: ptr.To(BackoffLimitPtrVal),
+			BackoffLimit: ptr.To(backoffLimit),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
@@ -324,44 +382,18 @@ func (r *PostgresRestoreReconciler) createRestoreJob(
 					},
 				},
 				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyOnFailure,
+				RestartPolicy: corev1.RestartPolicyOnFailure,
 					Containers: []corev1.Container{
 						{
 							Name:    "restore",
 							Image:   fmt.Sprintf("postgres:%s", cluster.Spec.PostgresVersion),
 							Command: []string{"/bin/sh", "-c"},
 							Args:    []string{cmd},
-							Env: []corev1.EnvVar{
-								{
-									Name: "PGPASSWORD",
-									ValueFrom: &corev1.EnvVarSource{
-										SecretKeyRef: &corev1.SecretKeySelector{
-											LocalObjectReference: corev1.LocalObjectReference{
-												Name: fmt.Sprintf("%s-credentials", cluster.Name),
-											},
-											Key: "postgres-password",
-										},
-									},
-								},
-							},
-							VolumeMounts: []corev1.VolumeMount{
-								{
-									Name:      "data",
-									MountPath: "/var/lib/postgresql/data",
-								},
-							},
+							Env:    restoreEnv,
+							VolumeMounts: dataVolumeMount,
 						},
 					},
-					Volumes: []corev1.Volume{
-						{
-							Name: "data",
-							VolumeSource: corev1.VolumeSource{
-								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-									ClaimName: storage.VolumeName,
-								},
-							},
-						},
-					},
+					Volumes: volumes,
 				},
 			},
 		},

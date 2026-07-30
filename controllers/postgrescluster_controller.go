@@ -126,6 +126,9 @@ func (r *PostgresClusterReconciler) setDefaults(cluster *databasev1.PostgresClus
 	if cluster.Spec.HighAvailability.FailoverTimeout == 0 {
 		cluster.Spec.HighAvailability.FailoverTimeout = 30
 	}
+	if cluster.Spec.Monitoring.Enabled && cluster.Spec.Monitoring.Prometheus.Port == 0 {
+		cluster.Spec.Monitoring.Prometheus.Port = 9187
+	}
 }
 
 func (r *PostgresClusterReconciler) reconcileCluster(ctx context.Context, cluster *databasev1.PostgresCluster) error {
@@ -351,6 +354,10 @@ func (r *PostgresClusterReconciler) reconcileInstanceStatefulSet(
 	if err != nil {
 		return fmt.Errorf("invalid Memory value: %w", err)
 	}
+	storageSize, err := resource.ParseQuantity(storage.Size)
+	if err != nil {
+		return fmt.Errorf("invalid storage size: %w", err)
+	}
 
 	// Set access modes
 	accessModes := []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
@@ -528,7 +535,7 @@ func (r *PostgresClusterReconciler) reconcileInstanceStatefulSet(
 						AccessModes: accessModes,
 						Resources: corev1.VolumeResourceRequirements{
 							Requests: corev1.ResourceList{
-								corev1.ResourceStorage: resource.MustParse(storage.Size),
+								corev1.ResourceStorage: storageSize,
 							},
 						},
 						StorageClassName: storageClassName,
@@ -607,7 +614,7 @@ func (r *PostgresClusterReconciler) reconcileMonitoring(ctx context.Context, clu
 				{
 					Name:       "metrics",
 					Port:       cluster.Spec.Monitoring.Prometheus.Port,
-					TargetPort: intstr.FromString("metrics"),
+					TargetPort: intstr.FromInt(int(cluster.Spec.Monitoring.Prometheus.Port)),
 					Protocol:   corev1.ProtocolTCP,
 				},
 			},

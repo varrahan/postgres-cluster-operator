@@ -61,11 +61,14 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// Get the referenced cluster
-	cluster, err := r.getCluster(ctx, user) 
-	if err := r.updateStatus(ctx, user, databasev1.PostgresUserStatus{
-		Phase:   "Failed",
-		Message: fmt.Sprintf("Failed to get cluster %s: %v", user.Spec.ClusterRef.Name, err),
-	}); err != nil {
+	cluster, err := r.getCluster(ctx, user)
+	if err != nil {
+		if statusErr := r.updateStatus(ctx, user, databasev1.PostgresUserStatus{
+			Phase:   "Failed",
+			Message: fmt.Sprintf("Failed to get cluster %s: %v", userClusterName(user), err),
+		}); statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -74,7 +77,7 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err != nil {
 		if updateErr := r.updateStatus(ctx, user, databasev1.PostgresUserStatus{
 			Phase:   "Failed",
-			Message: fmt.Sprintf("Failed to get target instances for cluster %s: %v", user.Spec.ClusterRef.Name, err),
+			Message: fmt.Sprintf("Failed to get target instances for cluster %s: %v", userClusterName(user), err),
 		}); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
@@ -85,7 +88,7 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.reconcilePasswordSecret(ctx, user); err != nil {
 		if updateErr := r.updateStatus(ctx, user, databasev1.PostgresUserStatus{
 			Phase:   "Failed",
-			Message: fmt.Sprintf("Failed to reconcile password secret for cluster %s: %v", user.Spec.ClusterRef.Name, err),
+			Message: fmt.Sprintf("Failed to reconcile password secret for cluster %s: %v", userClusterName(user), err),
 		}); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
@@ -123,6 +126,10 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 }
 
 func (r *PostgresUserReconciler) getCluster(ctx context.Context, user *databasev1.PostgresUser) (*databasev1.PostgresCluster, error) {
+	if user.Spec.ClusterRef == nil {
+		return nil, fmt.Errorf("clusterRef is required")
+	}
+
 	clusterKey := types.NamespacedName{
 		Name:      user.Spec.ClusterRef.Name,
 		Namespace: user.Spec.ClusterRef.Namespace,
@@ -136,6 +143,13 @@ func (r *PostgresUserReconciler) getCluster(ctx context.Context, user *databasev
 		return nil, err
 	}
 	return cluster, nil
+}
+
+func userClusterName(user *databasev1.PostgresUser) string {
+	if user == nil || user.Spec.ClusterRef == nil || user.Spec.ClusterRef.Name == "" {
+		return "<unknown>"
+	}
+	return user.Spec.ClusterRef.Name
 }
 
 func (r *PostgresUserReconciler) getTargetInstances(user *databasev1.PostgresUser, cluster *databasev1.PostgresCluster) ([]string, error) {
@@ -391,7 +405,7 @@ func (r *PostgresUserReconciler) handleDeletion(ctx context.Context, user *datab
 	logger.Info("Handling deletion of PostgresUser", "user", user.Name)
 
 	// Only attempt to drop user if cluster exists
-	if user.Status.Phase == "Ready" {
+	if user.Status.Phase == "Ready" && user.Spec.ClusterRef != nil {
 		cluster := &databasev1.PostgresCluster{}
 		clusterKey := types.NamespacedName{
 			Name:      user.Spec.ClusterRef.Name,

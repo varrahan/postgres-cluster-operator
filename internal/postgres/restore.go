@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"fmt"
-	"strings"
 
 	databasev1 "postgres-operator/api/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -20,65 +19,47 @@ func BuildRestoreCommand(
 		return "", fmt.Errorf("backup cannot be nil")
 	}
 
-	// Base command
-	cmd := "pg_restore"
-
-	// Add common options
-	cmd += fmt.Sprintf(" --host=${POSTGRES_HOST:-localhost}")
-	cmd += fmt.Sprintf(" --port=${POSTGRES_PORT:-5432}")
-	cmd += fmt.Sprintf(" --username=${POSTGRES_USER:-postgres}")
-	cmd += fmt.Sprintf(" --dbname=%s", dbConfig.Name)
-
-	// Add format-specific options based on backup type
-	switch backup.Spec.Type {
+	restoreType := NormalizeBackupType(backup.Spec.Type)
+	switch restoreType {
 	case "logical":
-		cmd += " --format=c"
-		cmd += fmt.Sprintf(" --file=%s", "/backup/data.dump")
+		dbName := dbConfig.Name
+		if dbName == "" {
+			dbName = "postgres"
+		}
+
+		cmd := "pg_restore"
+		cmd += " --host=${POSTGRES_HOST:-localhost}"
+		cmd += " --port=${POSTGRES_PORT:-5432}"
+		cmd += " --username=${POSTGRES_USER:-postgres}"
+		cmd += fmt.Sprintf(" --dbname=%s", dbName)
+		cmd += " --format=c /backup/data.dump"
+
+		// Add restore options
+		if options.DropExisting {
+			cmd += " --clean --if-exists"
+		}
+		if options.DataOnly {
+			cmd += " --data-only"
+		}
+		if options.SchemaOnly {
+			cmd += " --schema-only"
+		}
+		if options.ParallelRestores > 1 {
+			cmd += fmt.Sprintf(" --jobs=%d", options.ParallelRestores)
+		}
+
+		return cmd, nil
+
 	case "physical":
-		cmd += " --format=directory"
-		cmd += fmt.Sprintf(" --directory=%s", "/backup")
+		cmd := "mkdir -p /var/lib/postgresql/data"
+		cmd += " && find /var/lib/postgresql/data -mindepth 1 -exec rm -rf {} + 2>/dev/null || true"
+		cmd += " && cp -a /backup/. /var/lib/postgresql/data/"
+		cmd += " && chown -R 999:999 /var/lib/postgresql/data/"
+		return cmd, nil
+
 	default:
 		return "", fmt.Errorf("unsupported backup type: %s", backup.Spec.Type)
 	}
-
-	// Add restore options
-	if options.DropExisting {
-		cmd += " --clean"
-	}
-	if options.DataOnly {
-		cmd += " --data-only"
-	}
-	if options.SchemaOnly {
-		cmd += " --schema-only"
-	}
-	if options.ParallelRestores > 1 {
-		cmd += fmt.Sprintf(" --jobs=%d", options.ParallelRestores)
-	}
-	if options.Timeout != "" {
-		cmd += fmt.Sprintf(" --timeout=%s", options.Timeout)
-	}
-
-	// Add database filter if specified
-	if options.DatabaseFilter != nil {
-		if len(options.DatabaseFilter.Include) > 0 {
-			cmd += fmt.Sprintf(" --dbname=%s", strings.Join(options.DatabaseFilter.Include, ","))
-		}
-		if len(options.DatabaseFilter.Exclude) > 0 {
-			for _, db := range options.DatabaseFilter.Exclude {
-				cmd += fmt.Sprintf(" --exclude-database=%s", db)
-			}
-		}
-	}
-
-	// Add WAL information if available
-	if backup.Status.WALStart != "" {
-		cmd += fmt.Sprintf(" --wal-start=%s", backup.Status.WALStart)
-	}
-	if backup.Status.WALEnd != "" {
-		cmd += fmt.Sprintf(" --wal-end=%s", backup.Status.WALEnd)
-	}
-
-	return cmd, nil
 }
 
 // AddBackupVolumeToJob adds the appropriate volume to the job based on the backup storage type

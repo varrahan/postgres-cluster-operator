@@ -25,16 +25,6 @@ func CreateOrUpdate(ctx context.Context, c client.Client, obj client.Object) err
 		return err
 	}
 
-	// Preserve existing data where appropriate
-	switch target := obj.(type) {
-	case *corev1.Secret:
-		currentSecret := current.(*corev1.Secret)
-		target.Data = currentSecret.Data
-	case *corev1.ConfigMap:
-		currentConfigMap := current.(*corev1.ConfigMap)
-		target.Data = currentConfigMap.Data
-	}
-
 	// Set resource version for update
 	obj.SetResourceVersion(current.GetResourceVersion())
 	return c.Update(ctx, obj)
