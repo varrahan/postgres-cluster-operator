@@ -6,9 +6,6 @@ import (
 
 // +groupName=database.example.com
 
-// +k8s:deepcopy-gen=true
-// +kubebuilder:object:generate=true
-// Specifcations for restoring
 type PostgresRestoreSpec struct {
 	BackupRef BackupReference `json:"backupRef"`
 	TargetCluster ClusterReference `json:"targetCluster"`
@@ -16,25 +13,17 @@ type PostgresRestoreSpec struct {
 	Instances *InstanceSelector `json:"instances,omitempty"`
 }
 
-// +k8s:deepcopy-gen=true
-// +kubebuilder:object:generate=true
-// Options when restoring from backup
 type RestoreOptions struct {
 	DropExisting bool `json:"dropExisting,omitempty"`
 	DataOnly bool `json:"dataOnly,omitempty"`
 	SchemaOnly bool `json:"schemaOnly,omitempty"`
 	Timeout string `json:"timeout,omitempty"`
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:default=1
 	// +optional
 	ParallelRestores int32 `json:"parallelRestores,omitempty"`
 	// +optional
 	DatabaseFilter *DatabaseFilter `json:"databaseFilter,omitempty"`
 }
 
-// +k8s:deepcopy-gen=true
-// +kubebuilder:object:generate=true
-// Selector for which instances are being restored. Selected by name
 type InstanceSelector struct {
 	Names []string `json:"names,omitempty"`
 	// +optional
@@ -43,17 +32,12 @@ type InstanceSelector struct {
 	LabelSelector *metav1.LabelSelector `json:"labelSelector,omitempty"`
 }
 
-// +k8s:deepcopy-gen=true
-// +kubebuilder:object:generate=true
 type DatabaseFilter struct {
 	Include []string `json:"include,omitempty"`
 	// +optional
 	Exclude []string `json:"exclude,omitempty"`
 }
 
-// +k8s:deepcopy-gen=true
-// +kubebuilder:object:generate=true
-// Restoration status
 type PostgresRestoreStatus struct {
 	Phase string `json:"phase,omitempty"`
 	Message string `json:"message,omitempty"`
@@ -66,9 +50,6 @@ type PostgresRestoreStatus struct {
 	InstanceStatuses []InstanceRestoreStatus `json:"instanceStatuses,omitempty"`
 }
 
-// +k8s:deepcopy-gen=true
-// +kubebuilder:object:generate=true
-// Instance-specific status tracking
 type InstanceRestoreStatus struct {
 	Name string `json:"name"`
 	Phase string `json:"phase,omitempty"`

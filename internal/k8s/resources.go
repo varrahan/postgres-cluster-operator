@@ -12,7 +12,6 @@ import (
 	databasev1 "postgres-operator/api/v1"
 )
 
-// CreateOrUpdate creates or updates a Kubernetes resource
 func CreateOrUpdate(ctx context.Context, c client.Client, obj client.Object) error {
 	key := client.ObjectKeyFromObject(obj)
 	current := obj.DeepCopyObject().(client.Object)
@@ -25,12 +24,10 @@ func CreateOrUpdate(ctx context.Context, c client.Client, obj client.Object) err
 		return err
 	}
 
-	// Set resource version for update
 	obj.SetResourceVersion(current.GetResourceVersion())
 	return c.Update(ctx, obj)
 }
 
-// CreateBackupPVC creates a PVC for backup storage
 func CreateBackupPVC(ctx context.Context, k8sClient client.Client, cluster *databasev1.PostgresCluster, size string) error {
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{

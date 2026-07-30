@@ -5,7 +5,6 @@ import (
 	"math/big"
 )
 
-// GeneratePassword generates a secure random password
 func GeneratePassword(length int) (string, error) {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
 	

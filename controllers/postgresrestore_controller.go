@@ -22,7 +22,6 @@ import (
 	"postgres-operator/internal/postgres"
 )
 
-// PostgresRestoreReconciler reconciles a PostgresRestore object
 type PostgresRestoreReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -38,7 +37,6 @@ type PostgresRestoreReconciler struct {
 func (r *PostgresRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	// Initialize restore object
 	restore := &databasev1.PostgresRestore{}
 	if err := r.Get(ctx, req.NamespacedName, restore); err != nil {
 		if errors.IsNotFound(err) {
@@ -49,7 +47,6 @@ func (r *PostgresRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, fmt.Errorf("failed to get PostgresRestore: %w", err)
 	}
 
-	// Handle finalizer
 	if restore.DeletionTimestamp != nil {
 		return r.handleDeletion(ctx, restore)
 	}
@@ -62,13 +59,11 @@ func (r *PostgresRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Skip if already completed
 	if restore.Status.Phase == "Completed" {
 		logger.Info("Restore already completed, skipping reconciliation")
 		return ctrl.Result{}, nil
 	}
 
-	// Get referenced cluster
 	cluster := &databasev1.PostgresCluster{}
 	clusterKey := types.NamespacedName{
 		Name:      restore.Spec.TargetCluster.Name,
@@ -82,7 +77,6 @@ func (r *PostgresRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return r.handleError(ctx, restore, "Failed to get referenced PostgresCluster", err)
 	}
 
-	// Get referenced backup
 	backup := &databasev1.PostgresBackup{}
 	backupKey := types.NamespacedName{
 		Name:      restore.Spec.BackupRef.Name,
@@ -96,10 +90,8 @@ func (r *PostgresRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return r.handleError(ctx, restore, "Failed to get referenced PostgresBackup", err)
 	}
 
-	// Set defaults
 	r.setDefaults(restore)
 
-	// Reconcile the restore
 	if err := r.reconcileRestore(ctx, restore, cluster, backup); err != nil {
 		return r.handleError(ctx, restore, "Failed to reconcile PostgreSQL restore", err)
 	}
@@ -138,13 +130,11 @@ func (r *PostgresRestoreReconciler) reconcileRestore(
 ) error {
 	logger := log.FromContext(ctx)
 
-	// Get target instances
 	targetInstances, err := r.getTargetInstances(cluster, restore)
 	if err != nil {
 		return fmt.Errorf("failed to get target instances: %w", err)
 	}
 
-	// Initialize status if needed
 	if len(restore.Status.InstanceStatuses) != len(targetInstances) {
 		restore.Status.InstanceStatuses = make([]databasev1.InstanceRestoreStatus, len(targetInstances))
 		for i, instance := range targetInstances {
@@ -159,23 +149,19 @@ func (r *PostgresRestoreReconciler) reconcileRestore(
 		}
 	}
 
-	// Process each instance
 	for i, instance := range targetInstances {
 		instanceStatus := &restore.Status.InstanceStatuses[i]
 
-		// Skip if already completed
 		if instanceStatus.Phase == "Completed" {
 			continue
 		}
 
-		// Check if job exists
 		job := &batchv1.Job{}
 		err := r.Get(ctx, types.NamespacedName{Name: instanceStatus.JobName, Namespace: restore.Namespace}, job)
 		if err != nil && !errors.IsNotFound(err) {
 			return fmt.Errorf("failed to check for existing job: %w", err)
 		}
 
-		// Create job if not exists
 		if errors.IsNotFound(err) {
 			job, err = r.createRestoreJob(restore, cluster, backup, instance)
 			if err != nil {
@@ -195,13 +181,11 @@ func (r *PostgresRestoreReconciler) reconcileRestore(
 			instanceStatus.StartTime = &metav1.Time{Time: time.Now()}
 		}
 
-		// Update job status
 		if err := r.updateJobStatus(ctx, job, instanceStatus); err != nil {
 			return fmt.Errorf("failed to update job status: %w", err)
 		}
 	}
 
-	// Update overall restore status
 	return r.updateRestoreStatus(ctx, restore)
 }
 
@@ -209,7 +193,6 @@ func (r *PostgresRestoreReconciler) getTargetInstances(
 	cluster *databasev1.PostgresCluster,
 	restore *databasev1.PostgresRestore,
 ) ([]databasev1.PostgresInstanceSpec, error) {
-	// If no instance selector, return all instances
 	if restore.Spec.Instances == nil {
 		return cluster.Spec.Instances, nil
 	}
@@ -217,7 +200,6 @@ func (r *PostgresRestoreReconciler) getTargetInstances(
 	var instances []databasev1.PostgresInstanceSpec
 	selector := restore.Spec.Instances
 
-	// Handle name selection
 	if len(selector.Names) > 0 {
 		for _, name := range selector.Names {
 			found := false
@@ -235,7 +217,6 @@ func (r *PostgresRestoreReconciler) getTargetInstances(
 		return instances, nil
 	}
 
-	// Handle role selection
 	if selector.Role != "" {
 		for _, instance := range cluster.Spec.Instances {
 			if instance.Role == selector.Role {
@@ -248,7 +229,6 @@ func (r *PostgresRestoreReconciler) getTargetInstances(
 		return nil, fmt.Errorf("no instances with role %s found", selector.Role)
 	}
 
-	// Handle label selection
 	if selector.LabelSelector != nil {
 		labelSelector, err := metav1.LabelSelectorAsSelector(selector.LabelSelector)
 		if err != nil {
@@ -256,8 +236,6 @@ func (r *PostgresRestoreReconciler) getTargetInstances(
 		}
 
 		for _, instance := range cluster.Spec.Instances {
-			// In a real implementation, you'd use actual instance labels
-			// Here we simulate with basic labels
 			instanceLabels := map[string]string{
 				"instance": instance.Name,
 				"role":     instance.Role,
@@ -269,7 +247,6 @@ func (r *PostgresRestoreReconciler) getTargetInstances(
 		return instances, nil
 	}
 
-	// Default to all instances
 	return cluster.Spec.Instances, nil
 }
 
@@ -279,13 +256,11 @@ func (r *PostgresRestoreReconciler) createRestoreJob(
 	backup *databasev1.PostgresBackup,
 	instance databasev1.PostgresInstanceSpec,
 ) (*batchv1.Job, error) {
-	// Get storage configuration
 	storage := cluster.Spec.Storage
 	if instance.Storage != nil {
 		storage = *instance.Storage
 	}
 
-	// Get database configuration
 	dbConfig := cluster.Spec.Database
 	if instance.Database != nil {
 		dbConfig = *instance.Database
@@ -298,13 +273,11 @@ func (r *PostgresRestoreReconciler) createRestoreJob(
 		return nil, fmt.Errorf("unsupported backup type: %s", backup.Spec.Type)
 	}
 
-	// Build restore command
 	cmd, err := postgres.BuildRestoreCommand(backup, restore.Spec.Options, dbConfig, storage)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build restore command: %w", err)
 	}
 
-	// Var for BackoffLimit
 	backoffLimit := int32(0)
 	dataVolumeMount := []corev1.VolumeMount{}
 	volumes := []corev1.Volume{}
@@ -340,7 +313,6 @@ func (r *PostgresRestoreReconciler) createRestoreJob(
 			},
 		})
 	case "logical":
-		// Logical restore connects to database, no in-pod data PVC required.
 		restoreEnv = append(restoreEnv,
 			corev1.EnvVar{
 				Name:  "POSTGRES_USER",
@@ -357,7 +329,6 @@ func (r *PostgresRestoreReconciler) createRestoreJob(
 		)
 	}
 
-	// Create job object
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-%s-restore", restore.Name, instance.Name),
@@ -399,7 +370,6 @@ func (r *PostgresRestoreReconciler) createRestoreJob(
 		},
 	}
 
-	// Add backup volume
 	if err := postgres.AddBackupVolumeToJob(job, backup); err != nil {
 		return nil, fmt.Errorf("failed to add backup volume: %w", err)
 	}
@@ -416,7 +386,6 @@ func (r *PostgresRestoreReconciler) updateJobStatus(
 		return nil
 	}
 
-	// Get current job status
 	currentJob := &batchv1.Job{}
 	if err := r.Get(ctx, types.NamespacedName{Name: job.Name, Namespace: job.Namespace}, currentJob); err != nil {
 		if errors.IsNotFound(err) {
@@ -425,7 +394,6 @@ func (r *PostgresRestoreReconciler) updateJobStatus(
 		return fmt.Errorf("failed to get job: %w", err)
 	}
 
-	// Update status based on job state
 	if currentJob.Status.CompletionTime != nil {
 		instanceStatus.Phase = "Completed"
 		instanceStatus.CompletionTime = currentJob.Status.CompletionTime
@@ -454,10 +422,8 @@ func (r *PostgresRestoreReconciler) updateRestoreStatus(
 	ctx context.Context,
 	restore *databasev1.PostgresRestore,
 ) error {
-	// Initialize status counters
 	var completed, failed, running int
 
-	// Check each instance status
 	for _, status := range restore.Status.InstanceStatuses {
 		switch status.Phase {
 		case "Completed":
@@ -469,7 +435,6 @@ func (r *PostgresRestoreReconciler) updateRestoreStatus(
 		}
 	}
 
-	// Determine overall status
 	totalInstances := len(restore.Status.InstanceStatuses)
 	switch {
 	case failed > 0:
@@ -487,10 +452,8 @@ func (r *PostgresRestoreReconciler) updateRestoreStatus(
 		restore.Status.Message = fmt.Sprintf("Waiting for %d instances to start", totalInstances)
 	}
 
-	// Update conditions
 	restore.Status.Conditions = r.buildConditions(restore)
 
-	// Update status
 	return r.Status().Update(ctx, restore)
 }
 
@@ -539,7 +502,6 @@ func (r *PostgresRestoreReconciler) buildConditions(restore *databasev1.Postgres
 func (r *PostgresRestoreReconciler) handleDeletion(ctx context.Context, restore *databasev1.PostgresRestore) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	// Delete all associated jobs
 	for _, instanceStatus := range restore.Status.InstanceStatuses {
 		if instanceStatus.JobName != "" {
 			job := &batchv1.Job{
@@ -555,7 +517,6 @@ func (r *PostgresRestoreReconciler) handleDeletion(ctx context.Context, restore 
 		}
 	}
 
-	// Remove finalizer
 	controllerutil.RemoveFinalizer(restore, "database.example.com/postgres-restore")
 	if err := r.Update(ctx, restore); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to remove finalizer: %w", err)

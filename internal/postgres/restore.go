@@ -8,7 +8,6 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 )
 
-// BuildRestoreCommand constructs the pg_restore command based on the backup and restore specifications
 func BuildRestoreCommand(
 	backup *databasev1.PostgresBackup,
 	options databasev1.RestoreOptions,
@@ -34,7 +33,6 @@ func BuildRestoreCommand(
 		cmd += fmt.Sprintf(" --dbname=%s", dbName)
 		cmd += " --format=c /backup/data.dump"
 
-		// Add restore options
 		if options.DropExisting {
 			cmd += " --clean --if-exists"
 		}
@@ -62,7 +60,6 @@ func BuildRestoreCommand(
 	}
 }
 
-// AddBackupVolumeToJob adds the appropriate volume to the job based on the backup storage type
 func AddBackupVolumeToJob(job *batchv1.Job, backup *databasev1.PostgresBackup) error {
 	if job == nil {
 		return fmt.Errorf("job cannot be nil")
@@ -73,7 +70,6 @@ func AddBackupVolumeToJob(job *batchv1.Job, backup *databasev1.PostgresBackup) e
 
 	switch backup.Spec.Storage.Type {
 	case "local":
-		// For local backups, we expect a PVC with the backup data
 		pvcName, ok := backup.Spec.Storage.Config["pvcName"]
 		if !ok || pvcName == "" {
 			return fmt.Errorf("pvcName not specified in local backup storage config")
@@ -88,10 +84,8 @@ func AddBackupVolumeToJob(job *batchv1.Job, backup *databasev1.PostgresBackup) e
 			},
 		}
 
-		// Add volume to pod spec
 		job.Spec.Template.Spec.Volumes = append(job.Spec.Template.Spec.Volumes, volume)
 
-		// Add volume mount to container
 		container := &job.Spec.Template.Spec.Containers[0]
 		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
 			Name:      "backup",
@@ -100,8 +94,6 @@ func AddBackupVolumeToJob(job *batchv1.Job, backup *databasev1.PostgresBackup) e
 		})
 
 	case "s3":
-		// For S3 backups, we need to configure AWS credentials and download the backup first
-		// This would be done via an init container
 		initContainer := corev1.Container{
 			Name:    "download-backup",
 			Image:   "amazon/aws-cli:latest",
@@ -147,7 +139,6 @@ func AddBackupVolumeToJob(job *batchv1.Job, backup *databasev1.PostgresBackup) e
 			},
 		}
 
-		// Add emptyDir volume for the downloaded backup
 		volume := corev1.Volume{
 			Name: "backup",
 			VolumeSource: corev1.VolumeSource{
@@ -158,7 +149,6 @@ func AddBackupVolumeToJob(job *batchv1.Job, backup *databasev1.PostgresBackup) e
 		job.Spec.Template.Spec.Volumes = append(job.Spec.Template.Spec.Volumes, volume)
 		job.Spec.Template.Spec.InitContainers = append(job.Spec.Template.Spec.InitContainers, initContainer)
 
-		// Add volume mount to main container
 		container := &job.Spec.Template.Spec.Containers[0]
 		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
 			Name:      "backup",

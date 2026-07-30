@@ -23,7 +23,6 @@ import (
 	"postgres-operator/internal/utils"
 )
 
-// PostgresClusterReconciler reconciles a PostgresCluster object
 type PostgresClusterReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -43,7 +42,6 @@ type PostgresClusterReconciler struct {
 func (r *PostgresClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	// Fetch the PostgresCluster instance
 	cluster := &databasev1.PostgresCluster{}
 	err := r.Get(ctx, req.NamespacedName, cluster)
 	if err != nil {
@@ -55,7 +53,6 @@ func (r *PostgresClusterReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	// Add finalizer if not present
 	if !controllerutil.ContainsFinalizer(cluster, "database.example.com/postgres-cluster") {
 		controllerutil.AddFinalizer(cluster, "database.example.com/postgres-cluster")
 		if err := r.Update(ctx, cluster); err != nil {
@@ -63,15 +60,12 @@ func (r *PostgresClusterReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 	}
 
-	// Handle deletion
 	if cluster.DeletionTimestamp != nil {
 		return r.handleDeletion(ctx, cluster)
 	}
 
-	// Set default values
 	r.setDefaults(cluster)
 
-	// Handle backward compatibility - create default instance if none specified
 	if len(cluster.Spec.Instances) == 0 {
 		cluster.Spec.Instances = []databasev1.PostgresInstanceSpec{
 			{
@@ -89,13 +83,11 @@ func (r *PostgresClusterReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Reconcile the PostgreSQL cluster
 	if err := r.reconcileCluster(ctx, cluster); err != nil {
 		logger.Error(err, "Failed to reconcile PostgreSQL cluster")
 		return ctrl.Result{}, err
 	}
 
-	// Update status
 	if err := r.updateStatus(ctx, cluster); err != nil {
 		logger.Error(err, "Failed to update PostgresCluster status")
 		return ctrl.Result{}, err
@@ -134,24 +126,20 @@ func (r *PostgresClusterReconciler) setDefaults(cluster *databasev1.PostgresClus
 func (r *PostgresClusterReconciler) reconcileCluster(ctx context.Context, cluster *databasev1.PostgresCluster) error {
 	logger := log.FromContext(ctx)
 
-	// Create ConfigMap for PostgreSQL configuration
 	if err := r.reconcileConfigMap(ctx, cluster); err != nil {
 		return fmt.Errorf("failed to reconcile ConfigMap: %w", err)
 	}
 
-	// Create Secret for PostgreSQL credentials
 	if err := r.reconcileSecret(ctx, cluster); err != nil {
 		return fmt.Errorf("failed to reconcile Secret: %w", err)
 	}
 
-	// Reconcile each instance
 	for _, instance := range cluster.Spec.Instances {
 		if err := r.reconcileInstance(ctx, cluster, instance); err != nil {
 			return fmt.Errorf("failed to reconcile instance %s: %w", instance.Name, err)
 		}
 	}
 
-	// Reconcile monitoring if enabled
 	if cluster.Spec.Monitoring.Enabled {
 		if err := r.reconcileMonitoring(ctx, cluster); err != nil {
 			return fmt.Errorf("failed to reconcile monitoring: %w", err)
@@ -183,7 +171,6 @@ func (r *PostgresClusterReconciler) reconcileConfigMap(ctx context.Context, clus
 func (r *PostgresClusterReconciler) generatePostgresConfig(cluster *databasev1.PostgresCluster) string {
 	config := ""
 
-	// Add HA settings if enabled
 	if cluster.Spec.HighAvailability.Enabled {
 		config += "synchronous_commit = on\n"
 		if cluster.Spec.HighAvailability.SynchronousReplication {
@@ -191,7 +178,6 @@ func (r *PostgresClusterReconciler) generatePostgresConfig(cluster *databasev1.P
 		}
 	}
 
-	// Add instance-specific configs
 	for _, instance := range cluster.Spec.Instances {
 		if len(instance.Config) > 0 {
 			config += fmt.Sprintf("\n# Configuration for instance %s\n", instance.Name)
@@ -205,7 +191,6 @@ func (r *PostgresClusterReconciler) generatePostgresConfig(cluster *databasev1.P
 }
 
 func (r *PostgresClusterReconciler) reconcileSecret(ctx context.Context, cluster *databasev1.PostgresCluster) error {
-	// Generate secure passwords
 	postgresPassword, err := utils.GeneratePassword(16)
 	if err != nil {
 		return fmt.Errorf("failed to generate postgres password: %w", err)
@@ -216,7 +201,6 @@ func (r *PostgresClusterReconciler) reconcileSecret(ctx context.Context, cluster
 		return fmt.Errorf("failed to generate replication password: %w", err)
 	}
 
-	// Generate database access credentials
 	dbUsers := make(map[string][]byte)
 	for _, access := range cluster.Spec.Database.Access {
 		userPassword, err := utils.GeneratePassword(16)
@@ -237,7 +221,6 @@ func (r *PostgresClusterReconciler) reconcileSecret(ctx context.Context, cluster
 		},
 	}
 
-	// Add database users to secret
 	for username, password := range dbUsers {
 		secret.Data[fmt.Sprintf("user-%s-password", username)] = password
 	}
@@ -254,12 +237,10 @@ func (r *PostgresClusterReconciler) reconcileInstance(
 	cluster *databasev1.PostgresCluster,
 	instance databasev1.PostgresInstanceSpec,
 ) error {
-	// Create Service for this instance
 	if err := r.reconcileInstanceService(ctx, cluster, instance); err != nil {
 		return err
 	}
 
-	// Create StatefulSet for this instance
 	if err := r.reconcileInstanceStatefulSet(ctx, cluster, instance); err != nil {
 		return err
 	}
@@ -324,7 +305,6 @@ func (r *PostgresClusterReconciler) reconcileInstanceStatefulSet(
 	logger := log.FromContext(ctx)
 	instanceName := getInstanceResourceName(cluster.Name, instance.Name)
 
-	// Determine effective values
 	replicas := int32(1)
 	if instance.Replicas != nil {
 		replicas = *instance.Replicas
@@ -345,7 +325,6 @@ func (r *PostgresClusterReconciler) reconcileInstanceStatefulSet(
 		resources = *instance.Resources
 	}
 
-	// Parse resource requirements
 	cpuRequest, err := resource.ParseQuantity(resources.CPU)
 	if err != nil {
 		return fmt.Errorf("invalid CPU value: %w", err)
@@ -359,7 +338,6 @@ func (r *PostgresClusterReconciler) reconcileInstanceStatefulSet(
 		return fmt.Errorf("invalid storage size: %w", err)
 	}
 
-	// Set access modes
 	accessModes := []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
 	if len(storage.AccessModes) > 0 {
 		accessModes = make([]corev1.PersistentVolumeAccessMode, len(storage.AccessModes))
@@ -368,13 +346,11 @@ func (r *PostgresClusterReconciler) reconcileInstanceStatefulSet(
 		}
 	}
 
-	// Configure storage class
 	var storageClassName *string
 	if storage.StorageClass != "" {
 		storageClassName = &storage.StorageClass
 	}
 
-	// Security context
 	runAsUser := int64(999)
 	fsGroup := int64(999)
 
@@ -545,7 +521,6 @@ func (r *PostgresClusterReconciler) reconcileInstanceStatefulSet(
 		},
 	}
 
-	// Add HA configuration for replicas
 	if instance.Role == "replica" && cluster.Spec.HighAvailability.Enabled {
 		primarySvc := fmt.Sprintf("%s-primary.%s.svc.cluster.local", cluster.Name, cluster.Namespace)
 		statefulSet.Spec.Template.Spec.Containers[0].Env = append(
@@ -561,7 +536,6 @@ func (r *PostgresClusterReconciler) reconcileInstanceStatefulSet(
 		)
 	}
 
-	// Add init script if specified
 	if dbConfig.InitScript != "" {
 		statefulSet.Spec.Template.Spec.InitContainers = []corev1.Container{
 			{
@@ -630,11 +604,9 @@ func (r *PostgresClusterReconciler) reconcileMonitoring(ctx context.Context, clu
 }
 
 func (r *PostgresClusterReconciler) updateStatus(ctx context.Context, cluster *databasev1.PostgresCluster) error {
-	// Initialize instance status
 	cluster.Status.Instances = nil
 	totalReadyReplicas := int32(0)
 
-	// Check status for each instance
 	for _, instance := range cluster.Spec.Instances {
 		instanceName := getInstanceResourceName(cluster.Name, instance.Name)
 		
@@ -660,7 +632,6 @@ func (r *PostgresClusterReconciler) updateStatus(ctx context.Context, cluster *d
 			instanceStatus.ReadyReplicas = sts.Status.ReadyReplicas
 			totalReadyReplicas += sts.Status.ReadyReplicas
 			
-			// Mark first ready pod as leader for primary instances
 			if instance.Role == "primary" && sts.Status.ReadyReplicas > 0 {
 				instanceStatus.CurrentLeader = fmt.Sprintf("%s-0", instanceName)
 				cluster.Status.CurrentPrimary = instanceStatus.CurrentLeader
@@ -670,7 +641,6 @@ func (r *PostgresClusterReconciler) updateStatus(ctx context.Context, cluster *d
 		cluster.Status.Instances = append(cluster.Status.Instances, instanceStatus)
 	}
 
-	// Update overall cluster status
 	expectedReplicas := int32(0)
 	for _, instance := range cluster.Spec.Instances {
 		if instance.Replicas != nil {
@@ -704,11 +674,9 @@ func (r *PostgresClusterReconciler) handleDeletion(ctx context.Context, cluster 
 	logger := log.FromContext(ctx)
 	logger.Info("Handling deletion of PostgresCluster", "cluster", cluster.Name)
 
-	// Clean up resources
 	for _, instance := range cluster.Spec.Instances {
 		instanceName := getInstanceResourceName(cluster.Name, instance.Name)
 		
-		// Delete StatefulSet
 		sts := &appsv1.StatefulSet{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      instanceName,
@@ -719,7 +687,6 @@ func (r *PostgresClusterReconciler) handleDeletion(ctx context.Context, cluster 
 			return ctrl.Result{}, err
 		}
 		
-		// Delete Service
 		svc := &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      instanceName,
@@ -731,7 +698,6 @@ func (r *PostgresClusterReconciler) handleDeletion(ctx context.Context, cluster 
 		}
 	}
 
-	// Delete ConfigMap
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-config", cluster.Name),
@@ -742,7 +708,6 @@ func (r *PostgresClusterReconciler) handleDeletion(ctx context.Context, cluster 
 		return ctrl.Result{}, err
 	}
 
-	// Delete Secret
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-credentials", cluster.Name),
@@ -753,7 +718,6 @@ func (r *PostgresClusterReconciler) handleDeletion(ctx context.Context, cluster 
 		return ctrl.Result{}, err
 	}
 
-	// Remove finalizer
 	controllerutil.RemoveFinalizer(cluster, "database.example.com/postgres-cluster")
 	if err := r.Update(ctx, cluster); err != nil {
 		return ctrl.Result{}, err

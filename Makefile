@@ -1,22 +1,17 @@
-# Project parameters
 PROJECT_NAME := postgres-operator
 MODULE := $(shell go list -m)
 CONTROLLER_GEN := $(shell pwd)/bin/controller-gen
 KUSTOMIZE := $(shell pwd)/bin/kustomize
 
-# Image parameters
 IMAGE_REGISTRY ?= localhost:5000
 IMAGE_TAG ?= latest
 IMG ?= $(IMAGE_REGISTRY)/$(PROJECT_NAME):$(IMAGE_TAG)
 
-# Kubernetes parameters
 NAMESPACE ?= postgres-operator-system
 
-# Setup Go related variables
 GO ?= go
 GOBIN ?= $(shell go env GOPATH)/bin
 
-# Directories
 API_V1_DIR := ./api/v1
 CONFIG_DIR := ./config
 CRD_DIR := $(CONFIG_DIR)/crd
@@ -25,17 +20,14 @@ CRD_BASE_DIR := $(CRD_DIR)/bases
 .PHONY: all
 all: build
 
-## Build the operator binary
 .PHONY: build
 build:
 	$(GO) build -o bin/manager main.go
 
-## Run tests
 .PHONY: test
 test:
 	$(GO) test ./... -coverprofile cover.out
 
-## Generate deepcopy and other code in api/v1
 .PHONY: generate
 generate: controller-gen
 	$(CONTROLLER_GEN) \
@@ -44,7 +36,6 @@ generate: controller-gen
 		output:object:dir=$(API_V1_DIR)
 	@echo "Code generation complete in $(API_V1_DIR)"
 
-## Generate CRD manifests and RBAC
 .PHONY: manifests
 manifests: controller-gen
 	$(CONTROLLER_GEN) \
@@ -55,17 +46,14 @@ manifests: controller-gen
 		output:crd:artifacts:config=$(CRD_BASE_DIR)
 	@echo "Manifests generated at $(CRD_BASE_DIR)"
 
-## Install CRDs into the cluster
 .PHONY: install
 install: manifests kustomize
 	$(KUSTOMIZE) build $(CRD_DIR) | kubectl apply -f -
 
-## Uninstall CRDs from the cluster
 .PHONY: uninstall
 uninstall: manifests kustomize
 	$(KUSTOMIZE) build $(CRD_BASE_DIR) | kubectl delete -f -
 
-## Deploy controller to the cluster
 .PHONY: deploy
 deploy: install manifests kustomize
 	cd $(CONFIG_DIR)/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
@@ -81,50 +69,40 @@ deploy: install manifests kustomize
 	fi; \
 	echo "Deployment successful"
 
-## Undeploy controller from the cluster
 .PHONY: undeploy
 undeploy: kustomize
 	$(KUSTOMIZE) build $(CONFIG_DIR)/default | kubectl delete -f -
 
-## Run the operator locally
 .PHONY: run
 run: manifests generate
 	$(GO) run ./main.go
 
-## Build Docker image
 .PHONY: docker-build
 docker-build:
 	docker build -t $(IMG) .
 
-## Push Docker image
 .PHONY: docker-push
 docker-push:
 	docker push $(IMG)
 
-## Build and push Docker image
 .PHONY: docker-build-push
 docker-build-push: docker-build docker-push
 
-## Create sample PostgreSQL resources
 .PHONY: samples
 samples:
 	kubectl apply -f $(CONFIG_DIR)/samples/
 
-## Remove sample PostgreSQL resources
 .PHONY: samples-clean
 samples-clean:
 	kubectl delete -f $(CONFIG_DIR)/samples/ --ignore-not-found=true
 
-## Setup development environment
 .PHONY: dev-setup
 dev-setup: controller-gen kustomize
 	$(MAKE) generate manifests
 
-## Full deployment (build, push, deploy)
 .PHONY: deploy-full
 deploy-full: docker-build-push deploy
 
-## Install controller-gen locally if not present
 .PHONY: controller-gen
 controller-gen:
 	@{ \
@@ -138,7 +116,6 @@ controller-gen:
 	fi ; \
 	}
 
-## Install kustomize locally if not present
 .PHONY: kustomize
 kustomize:
 	@{ \
@@ -151,7 +128,6 @@ kustomize:
 	fi ; \
 	}
 
-## Check cluster connectivity and resources
 .PHONY: status
 status:
 	@echo "Checking cluster connectivity..."
@@ -163,23 +139,19 @@ status:
 	@echo "\nChecking PostgreSQL resources..."
 	kubectl get postgresclusters --all-namespaces || echo "No PostgreSQL clusters found"
 
-## View operator logs
 .PHONY: logs
 logs:
 	kubectl logs -n $(NAMESPACE) deployment/$(PROJECT_NAME)-controller-manager -f
 
-## Clean up generated files and binaries
 .PHONY: clean
 clean:
 	rm -rf bin
 	find $(API_DIR) -name zz_generated.deepcopy.go -delete
 	rm -f cover.out
 
-## Full cleanup (clean + undeploy + uninstall)
 .PHONY: clean-all
 clean-all: clean undeploy uninstall samples-clean
 
-## Lint the code
 .PHONY: lint
 lint:
 	@if command -v golangci-lint >/dev/null 2>&1; then \
@@ -189,25 +161,20 @@ lint:
 		exit 1; \
 	fi
 
-## Format the code
 .PHONY: fmt
 fmt:
 	$(GO) fmt ./...
 
-## Vet the code
 .PHONY: vet
 vet:
 	$(GO) vet ./...
 
-## Run pre-commit checks
 .PHONY: pre-commit
 pre-commit: fmt vet lint test
 
-## Generate all code and manifests
 .PHONY: generate-all
 generate-all: generate manifests
 
-## Verify code generation is up-to-date
 .PHONY: verify-generate
 verify-generate: generate-all
 	@if ! git diff --quiet; then \
@@ -216,7 +183,6 @@ verify-generate: generate-all
 		exit 1; \
 	fi
 
-## Help: show commands
 .PHONY: help
 help:
 	@echo "PostgreSQL Operator Makefile"

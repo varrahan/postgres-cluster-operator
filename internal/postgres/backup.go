@@ -14,19 +14,16 @@ import (
 	databasev1 "postgres-operator/api/v1"
 )
 
-// BackupManager handles backup operations
 type BackupManager struct {
 	client.Client
 }
 
-// NewBackupManager creates a new backup manager
 func NewBackupManager(client client.Client) *BackupManager {
 	return &BackupManager{
 		Client: client,
 	}
 }
 
-// NormalizeBackupType returns supported backup type aliases in a canonical form.
 func NormalizeBackupType(backupType string) string {
 	switch strings.ToLower(strings.TrimSpace(backupType)) {
 	case "", "full", "physical":
@@ -43,22 +40,18 @@ func (bm *BackupManager) CreateBackupJob(
 	cluster *databasev1.PostgresCluster,
 	instance *databasev1.PostgresInstanceSpec,
 ) (*batchv1.Job, error) {
-	// Get PVC name from cluster's backup storage config
 	pvcName, ok := cluster.Spec.Backup.Storage.Config["pvcName"]
 	if !ok || pvcName == "" {
 		return nil, fmt.Errorf("pvcName not set in cluster backup storage config")
 	}
 
-	// Build job name (CR name + "-job")
 	jobName := backup.Name + "-job"
 	if len(jobName) > 63 {
 		jobName = jobName[:63]
 	}
 
-	// Construct image using cluster's PostgresVersion
 	image := "postgres:" + cluster.Spec.PostgresVersion
 
-	// Determine target host
 	targetHost := cluster.Status.CurrentPrimary
 	if targetHost == "" {
 		targetHost = fmt.Sprintf("%s-primary.%s.svc.cluster.local", cluster.Name, cluster.Namespace)
@@ -67,14 +60,12 @@ func (bm *BackupManager) CreateBackupJob(
 		targetHost = fmt.Sprintf("%s-%s.%s.svc.cluster.local", cluster.Name, instance.Name, cluster.Namespace)
 	}
 
-	// Normalize type and initialize command by backup type
 	backupType := NormalizeBackupType(backup.Spec.Type)
 	var command []string
 	var args []string
 
 	switch backupType {
 	case "logical":
-		// For logical backups (pg_dump), we need the database name
 		dbName := cluster.Spec.Database.Name
 		if instance != nil && instance.Database != nil && instance.Database.Name != "" {
 			dbName = instance.Database.Name
@@ -95,7 +86,6 @@ func (bm *BackupManager) CreateBackupJob(
 			args = append(args, "-j", fmt.Sprintf("%d", backup.Spec.Options.ParallelJobs))
 		}
 
-		// Add any instance-specific parameters if needed
 		if instance != nil && instance.Config != nil {
 			for param, value := range instance.Config {
 				args = append(args, "--"+param, value)
@@ -103,7 +93,6 @@ func (bm *BackupManager) CreateBackupJob(
 		}
 
 	case "physical":
-		// For physical backups (pg_basebackup), we don't need the database name
 		command = []string{"pg_basebackup"}
 		args = []string{
 			"-D", "/backup",
@@ -122,7 +111,6 @@ func (bm *BackupManager) CreateBackupJob(
 		return nil, fmt.Errorf("unsupported backup type: %s", backup.Spec.Type)
 	}
 
-	// Common environment variables
 	env := []corev1.EnvVar{
 		{
 			Name: "PGPASSWORD",
@@ -137,7 +125,6 @@ func (bm *BackupManager) CreateBackupJob(
 		},
 	}
 
-	// Add instance-specific init script if available for logical backups
 	if backupType == "logical" && instance != nil && instance.Database != nil && instance.Database.InitScript != "" {
 		env = append(env, corev1.EnvVar{
 			Name:  "PGINITSCRIPT",
@@ -145,7 +132,6 @@ func (bm *BackupManager) CreateBackupJob(
 		})
 	}
 
-	// Create job object
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      jobName,
@@ -199,7 +185,6 @@ func (bm *BackupManager) CreateBackupJob(
 		},
 	}
 
-	// Add instance-specific labels if provided
 	if instance != nil {
 		job.Labels["database.example.com/instance"] = instance.Name
 		if instance.Role != "" {
@@ -209,7 +194,6 @@ func (bm *BackupManager) CreateBackupJob(
 
 	return job, nil
 }
-// ListBackups lists all backups for a cluster
 func (bm *BackupManager) ListBackups(ctx context.Context, clusterName, namespace string) (*databasev1.PostgresBackupList, error) {
 	backupList := &databasev1.PostgresBackupList{}
 	
@@ -223,7 +207,6 @@ func (bm *BackupManager) ListBackups(ctx context.Context, clusterName, namespace
 	return backupList, nil
 }
 
-// DeleteBackup deletes a backup
 func (bm *BackupManager) DeleteBackup(ctx context.Context, backupName, namespace string) error {
 	backup := &databasev1.PostgresBackup{}
 	err := bm.Get(ctx, types.NamespacedName{Name: backupName, Namespace: namespace}, backup)

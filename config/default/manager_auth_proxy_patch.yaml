@@ -1,4 +1,3 @@
-# Adds kube-rbac-proxy container for securing metrics endpoint
 apiVersion: apps/v1
 kind: Deployment
 metadata:

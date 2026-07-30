@@ -20,7 +20,6 @@ import (
 	"postgres-operator/internal/postgres"
 )
 
-// PostgresBackupReconciler reconciles a PostgresBackup object
 type PostgresBackupReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -34,7 +33,6 @@ type PostgresBackupReconciler struct {
 func (r *PostgresBackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	// Fetch the PostgresBackup instance
 	backup := &databasev1.PostgresBackup{}
 	err := r.Get(ctx, req.NamespacedName, backup)
 	if err != nil {
@@ -46,18 +44,15 @@ func (r *PostgresBackupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Add finalizer if not present
 	if !controllerutil.ContainsFinalizer(backup, "database.example.com/postgres-backup") {
 		controllerutil.AddFinalizer(backup, "database.example.com/postgres-backup")
 		return ctrl.Result{}, r.Update(ctx, backup)
 	}
 
-	// Handle deletion
 	if backup.DeletionTimestamp != nil {
 		return r.handleDeletion(ctx, backup)
 	}
 
-	// Get the referenced cluster
 	cluster := &databasev1.PostgresCluster{}
 	clusterKey := types.NamespacedName{
 		Name:      backup.Spec.ClusterRef.Name,
@@ -75,10 +70,8 @@ func (r *PostgresBackupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, r.Status().Update(ctx, backup)
 	}
 
-	// Set defaults
 	r.setDefaults(backup)
 
-	// Reconcile the backup
 	if err := r.reconcileBackup(ctx, backup, cluster); err != nil {
 		logger.Error(err, "Failed to reconcile PostgreSQL backup")
 		backup.Status.Phase = "Failed"
@@ -108,55 +101,45 @@ func (r *PostgresBackupReconciler) setDefaults(backup *databasev1.PostgresBackup
 }
 
 func (r *PostgresBackupReconciler) reconcileBackup(ctx context.Context, backup *databasev1.PostgresBackup, cluster *databasev1.PostgresCluster) error {
-	// Determine target instance
 	targetInstance, err := r.getTargetInstance(backup, cluster)
 	if err != nil {
 		return fmt.Errorf("failed to determine target instance: %w", err)
 	}
 
-	// Use the internal BackupManager with instance context
 	backupManager := postgres.NewBackupManager(r.Client)
 	job, err := backupManager.CreateBackupJob(backup, cluster, targetInstance)
 	if err != nil {
 		return fmt.Errorf("failed to create backup job: %w", err)
 	}
 
-	// Set controller reference
 	if err := controllerutil.SetControllerReference(backup, job, r.Scheme); err != nil {
 		return err
 	}
 
-	// Create or update the job
 	if err := k8s.CreateOrUpdate(ctx, r.Client, job); err != nil {
 		return fmt.Errorf("failed to create backup job: %w", err)
 	}
 
-	// Update backup status with instance information
 	return r.updateBackupStatus(ctx, backup, job, cluster, targetInstance)
 }
 
 func (r *PostgresBackupReconciler) getTargetInstance(backup *databasev1.PostgresBackup, cluster *databasev1.PostgresCluster) (*databasev1.PostgresInstanceSpec, error) {
-    // Handle legacy clusters with no instances
     if len(cluster.Spec.Instances) == 0 {
         return nil, nil // Signals to use cluster-wide defaults
     }
 
-    // If no instance selector specified, default to primary
     if backup.Spec.Instances == nil || len(backup.Spec.Instances.Names) == 0 {
         return r.findInstanceByName(cluster, "primary")
     }
 
-    // Handle multiple instance selection - we'll take the first valid one
     for _, instanceName := range backup.Spec.Instances.Names {
         instance, err := r.findInstanceByName(cluster, instanceName)
         if err == nil {
             return instance, nil
         }
-        // Log the error but continue to try other names
         log.FromContext(context.Background()).Error(err, "Instance not found, trying next", "instanceName", instanceName)
     }
 
-    // If none of the specified instances were found, return an error
     return nil, fmt.Errorf("none of the specified instances (%v) were found in the cluster", backup.Spec.Instances.Names)
 }
 
@@ -176,7 +159,6 @@ func (r *PostgresBackupReconciler) updateBackupStatus(
 	cluster *databasev1.PostgresCluster,
 	targetInstance *databasev1.PostgresInstanceSpec,
 ) error {
-	// Get the current job status
 	currentJob := &batchv1.Job{}
 	if err := r.Get(ctx, types.NamespacedName{
 		Name:      job.Name,
@@ -185,7 +167,6 @@ func (r *PostgresBackupReconciler) updateBackupStatus(
 		return err
 	}
 
-	// Initialize status with instance context
 	backup.Status.TargetInstance = "primary" // Default
 	backup.Status.Database = databasev1.DatabaseStatus{
 		Name:   cluster.Spec.Database.Name,
@@ -201,12 +182,10 @@ func (r *PostgresBackupReconciler) updateBackupStatus(
 		}
 	}
 
-	// Include instance config parameters if requested
 	if backup.Spec.IncludeInstanceConfig && targetInstance != nil && targetInstance.Config != nil {
 		backup.Status.Database.Config = targetInstance.Config
 	}
 
-	// Update phase based on job status
 	switch {
 	case currentJob.Status.CompletionTime != nil:
 		backup.Status.Phase = "Completed"
@@ -215,7 +194,6 @@ func (r *PostgresBackupReconciler) updateBackupStatus(
 	case currentJob.Status.Failed > 0:
 		backup.Status.Phase = "Failed"
 		backup.Status.Message = "Backup job failed"
-		// ... (extract failure reason from job conditions)
 	case currentJob.Status.Active > 0:
 		backup.Status.Phase = "Running"
 		backup.Status.Message = "Backup job is running"
@@ -230,9 +208,6 @@ func (r *PostgresBackupReconciler) updateBackupStatus(
 	backup.Status.JobName = currentJob.Name
 	backup.Status.Conditions = r.buildBackupConditions(currentJob)
 
-	// TODO: Populate WAL information from backup job output
-	// backup.Status.WALStart = ...
-	// backup.Status.WALEnd = ...
 
 	return r.Status().Update(ctx, backup)
 }
@@ -258,7 +233,6 @@ func (r *PostgresBackupReconciler) handleDeletion(ctx context.Context, backup *d
 	logger := log.FromContext(ctx)
 	logger.Info("Handling deletion of PostgresBackup", "backup", backup.Name)
 
-	// Delete associated backup job if it exists
 	if backup.Status.JobName != "" {
 		job := &batchv1.Job{}
 		err := r.Get(ctx, types.NamespacedName{Name: backup.Status.JobName, Namespace: backup.Namespace}, job)
@@ -271,7 +245,6 @@ func (r *PostgresBackupReconciler) handleDeletion(ctx context.Context, backup *d
 		}
 	}
 
-	// Remove finalizer
 	controllerutil.RemoveFinalizer(backup, "database.example.com/postgres-backup")
 	return ctrl.Result{}, r.Update(ctx, backup)
 }

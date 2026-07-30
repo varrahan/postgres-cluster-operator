@@ -21,7 +21,6 @@ import (
 	"postgres-operator/internal/utils"
 )
 
-// PostgresUserReconciler reconciles a PostgresUser object
 type PostgresUserReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -35,7 +34,6 @@ type PostgresUserReconciler struct {
 func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("postgresuser", req.NamespacedName)
 
-	// Fetch the PostgresUser instance
 	user := &databasev1.PostgresUser{}
 	if err := r.Get(ctx, req.NamespacedName, user); err != nil {
 		if errors.IsNotFound(err) {
@@ -46,7 +44,6 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
-	// Add finalizer if not present
 	if !controllerutil.ContainsFinalizer(user, "database.example.com/postgres-user") {
 		controllerutil.AddFinalizer(user, "database.example.com/postgres-user")
 		if err := r.Update(ctx, user); err != nil {
@@ -55,12 +52,10 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Handle deletion
 	if user.DeletionTimestamp != nil {
 		return r.handleDeletion(ctx, user)
 	}
 
-	// Get the referenced cluster
 	cluster, err := r.getCluster(ctx, user)
 	if err != nil {
 		if statusErr := r.updateStatus(ctx, user, databasev1.PostgresUserStatus{
@@ -72,7 +67,6 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
-	// Get target instances
 	targetInstances, err := r.getTargetInstances(user, cluster)
 	if err != nil {
 		if updateErr := r.updateStatus(ctx, user, databasev1.PostgresUserStatus{
@@ -84,7 +78,6 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
-	// Reconcile password secret
 	if err := r.reconcilePasswordSecret(ctx, user); err != nil {
 		if updateErr := r.updateStatus(ctx, user, databasev1.PostgresUserStatus{
 			Phase:   "Failed",
@@ -95,10 +88,8 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
-	// Reconcile user across all target instances
 	instanceStatuses, reconcileErr := r.reconcileUserOnInstances(ctx, user, cluster, targetInstances)
 
-	// Update status regardless of errors
 	status := databasev1.PostgresUserStatus{
 		InstanceStatuses:    instanceStatuses,
 		LastPasswordChange: user.Status.LastPasswordChange,
@@ -121,7 +112,6 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, reconcileErr
 	}
 
-	// Requeue periodically for password rotation checks
 	return ctrl.Result{RequeueAfter: 30 * time.Minute}, nil
 }
 
@@ -153,7 +143,6 @@ func userClusterName(user *databasev1.PostgresUser) string {
 }
 
 func (r *PostgresUserReconciler) getTargetInstances(user *databasev1.PostgresUser, cluster *databasev1.PostgresCluster) ([]string, error) {
-	// If no instance selector specified, return all instances
 	if user.Spec.InstanceSelector == nil {
 		var instances []string
 		for _, instance := range cluster.Status.Instances {
@@ -162,12 +151,10 @@ func (r *PostgresUserReconciler) getTargetInstances(user *databasev1.PostgresUse
 		return instances, nil
 	}
 
-	// Handle name-based selection
 	if len(user.Spec.InstanceSelector.Names) > 0 {
 		return user.Spec.InstanceSelector.Names, nil
 	}
 
-	// Handle role-based selection
 	if user.Spec.InstanceSelector.Role != "" {
 		var instances []string
 		for _, instance := range cluster.Status.Instances {
@@ -181,7 +168,6 @@ func (r *PostgresUserReconciler) getTargetInstances(user *databasev1.PostgresUse
 		return instances, nil
 	}
 
-	// Handle label-based selection
 	if user.Spec.InstanceSelector.LabelSelector != nil {
 		selector, err := metav1.LabelSelectorAsSelector(user.Spec.InstanceSelector.LabelSelector)
 		if err != nil {
@@ -200,7 +186,6 @@ func (r *PostgresUserReconciler) getTargetInstances(user *databasev1.PostgresUse
 		return instances, nil
 	}
 
-	// Default to all instances if no specific selectors are provided
 	var instances []string
 	for _, instance := range cluster.Status.Instances {
 		instances = append(instances, instance.Name)
@@ -213,20 +198,17 @@ func (r *PostgresUserReconciler) reconcileUserOnInstances(ctx context.Context, u
 	var instanceStatuses []databasev1.UserInstanceStatus
 	var reconcileErr error
 
-	// Get password from secret
 	password, err := r.getPasswordFromSecret(ctx, user)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get password: %w", err)
 	}
 
-	// Process each target instance
 	for _, instanceName := range targetInstances {
 		instanceStatus := databasev1.UserInstanceStatus{
 			Name:  instanceName,
 			Ready: false,
 		}
 
-		// Connect to PostgreSQL instance
 		pgClient, err := postgres.NewClientForInstance(ctx, r.Client, cluster, instanceName)
 		if err != nil {
 			instanceStatus.Message = fmt.Sprintf("Failed to connect to instance: %v", err)
@@ -236,7 +218,6 @@ func (r *PostgresUserReconciler) reconcileUserOnInstances(ctx context.Context, u
 		}
 		defer pgClient.Close()
 
-		// Create or update user
 		if err := pgClient.CreateOrUpdateUser(ctx, user.Spec.Username, password, user.Spec.Privileges); err != nil {
 			instanceStatus.Message = fmt.Sprintf("Failed to create/update user: %v", err)
 			instanceStatuses = append(instanceStatuses, instanceStatus)
@@ -244,7 +225,6 @@ func (r *PostgresUserReconciler) reconcileUserOnInstances(ctx context.Context, u
 			continue
 		}
 
-		// Apply connection limit if specified
 		if user.Spec.ConnectionLimit >= 0 {
 			if err := pgClient.SetConnectionLimit(ctx, user.Spec.Username, user.Spec.ConnectionLimit); err != nil {
 				instanceStatus.Message = fmt.Sprintf("Failed to set connection limit: %v", err)
@@ -271,7 +251,6 @@ func (r *PostgresUserReconciler) reconcilePasswordSecret(ctx context.Context, us
 		return fmt.Errorf("password configuration is required")
 	}
 
-	// Handle referenced secret
 	if user.Spec.Password.SecretRef != nil {
 		secret := &corev1.Secret{}
 		err := r.Get(ctx, types.NamespacedName{
@@ -298,17 +277,14 @@ func (r *PostgresUserReconciler) reconcilePasswordSecret(ctx context.Context, us
 		return nil
 	}
 
-	// Handle password generation
 	if !user.Spec.Password.Generate {
 		return fmt.Errorf("password must be either provided via secretRef or generated")
 	}
 
-	// Check if we need to rotate password
 	if !r.shouldRotatePassword(user) {
 		return nil
 	}
 
-	// Generate new password
 	length := 16
 	if user.Spec.Password.Length > 0 {
 		length = int(user.Spec.Password.Length)
@@ -319,7 +295,6 @@ func (r *PostgresUserReconciler) reconcilePasswordSecret(ctx context.Context, us
 		return fmt.Errorf("failed to generate password: %w", err)
 	}
 
-	// Create or update secret
 	secretName := fmt.Sprintf("%s-password", user.Name)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -349,7 +324,6 @@ func (r *PostgresUserReconciler) reconcilePasswordSecret(ctx context.Context, us
 		return fmt.Errorf("failed to create/update password secret: %w", err)
 	}
 
-	// Update password change timestamp
 	now := metav1.Now()
 	user.Status.LastPasswordChange = &now
 	logger.Info("Successfully rotated password", "user", user.Name)
@@ -358,12 +332,10 @@ func (r *PostgresUserReconciler) reconcilePasswordSecret(ctx context.Context, us
 }
 
 func (r *PostgresUserReconciler) shouldRotatePassword(user *databasev1.PostgresUser) bool {
-	// No rotation policy - only rotate if secret doesn't exist
 	if user.Spec.Password.RotationPolicy == nil || !user.Spec.Password.RotationPolicy.Enabled {
 		return user.Status.LastPasswordChange == nil
 	}
 
-	// Check rotation interval
 	if user.Status.LastPasswordChange == nil {
 		return true
 	}
@@ -404,7 +376,6 @@ func (r *PostgresUserReconciler) handleDeletion(ctx context.Context, user *datab
 	logger := log.FromContext(ctx)
 	logger.Info("Handling deletion of PostgresUser", "user", user.Name)
 
-	// Only attempt to drop user if cluster exists
 	if user.Status.Phase == "Ready" && user.Spec.ClusterRef != nil {
 		cluster := &databasev1.PostgresCluster{}
 		clusterKey := types.NamespacedName{
@@ -431,7 +402,6 @@ func (r *PostgresUserReconciler) handleDeletion(ctx context.Context, user *datab
 		}
 	}
 
-	// Remove finalizer
 	controllerutil.RemoveFinalizer(user, "database.example.com/postgres-user")
 	if err := r.Update(ctx, user); err != nil {
 		return ctrl.Result{}, err
@@ -441,17 +411,14 @@ func (r *PostgresUserReconciler) handleDeletion(ctx context.Context, user *datab
 }
 
 func (r *PostgresUserReconciler) updateStatus(ctx context.Context, user *databasev1.PostgresUser, status databasev1.PostgresUserStatus) error {
-	// Preserve existing instance statuses if not being updated
 	if len(status.InstanceStatuses) == 0 && len(user.Status.InstanceStatuses) > 0 {
 		status.InstanceStatuses = user.Status.InstanceStatuses
 	}
 
-	// Preserve last password change if not being updated
 	if status.LastPasswordChange == nil && user.Status.LastPasswordChange != nil {
 		status.LastPasswordChange = user.Status.LastPasswordChange
 	}
 
-	// Update the status subresource
 	user.Status = status
 	return r.Status().Update(ctx, user)
 }
